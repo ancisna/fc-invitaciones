@@ -6,6 +6,9 @@ on:
     - cron: "*/5 * * * *"
   workflow_dispatch: {}   # permite lanzarlo manualmente desde la pestaña "Actions"
 
+permissions:
+  contents: write   # necesario para que el workflow pueda hacer git push
+
 jobs:
   revisar:
     runs-on: ubuntu-latest
