@@ -1,0 +1,38 @@
+name: Vigilar invitaciones ForoCoches
+
+on:
+  schedule:
+    # Se ejecuta cada 5 minutos (sintaxis cron: minuto hora dia mes dia_semana)
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}   # permite lanzarlo manualmente desde la pestaña "Actions"
+
+jobs:
+  revisar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Instalar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: pip install requests
+
+      - name: Ejecutar el vigilante
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PW: ${{ secrets.GMAIL_APP_PW }}
+        run: python vigilar_invitaciones_fc_v2.py
+
+      - name: Guardar el estado (ultimo_visto.json) para la próxima ejecución
+        run: |
+          git config user.name "fc-watcher-bot"
+          git config user.email "actions@github.com"
+          git add ultimo_visto.json
+          git diff --staged --quiet || git commit -m "Actualizar estado de mensajes vistos"
+          git push
