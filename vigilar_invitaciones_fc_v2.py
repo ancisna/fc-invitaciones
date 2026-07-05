@@ -42,6 +42,52 @@ PALABRAS_CLAVE = [
     "código", "codigo", "canjear", "invi ", "invis"
 ]
 
+URL_CANJE = "https://forocoches.com/codigo/"
+
+# Patrón principal, basado en el formato REAL que usa ForoCoches en su Telegram:
+#   "Invitaciones: rbhQgcf7qy kx5mpUjKc a canjear en forocoches.com/codigo"
+# Es decir: la palabra "Invitaciones:" (o "Invitación:"), seguida de uno o
+# varios códigos alfanuméricos separados por espacios, hasta que aparece
+# "a canjear" o termina la frase.
+PATRON_BLOQUE_CODIGOS = re.compile(
+    r'invitaci[oó]n(?:es)?\s*:\s*([A-Za-z0-9]{6,20}(?:\s+[A-Za-z0-9]{6,20})*)',
+    re.IGNORECASE,
+)
+
+# Patrones alternativos, por si alguna vez cambian el formato a "código: X"
+PATRONES_CODIGO_ALT = [
+    r'(?:c[oó]digo|code)\s*[:\-]?\s*["\']?([A-Za-z0-9_\-]{4,20})["\']?',
+    r'(?:canjea|canjear|usa|introduce)\s+(?:el\s+)?(?:c[oó]digo\s+)?["\']?([A-Za-z0-9_\-]{4,20})["\']?',
+]
+
+PALABRAS_A_IGNORAR = {"de", "para", "con", "una", "https", "http", "en", "el", "la"}
+
+
+def extraer_codigos(texto):
+    """Intenta extraer TODOS los códigos de invitación del texto del mensaje.
+    Devuelve una lista de códigos encontrados (puede estar vacía si no
+    detecta ninguno con certeza, ej: es un acertijo o viene en una imagen)."""
+
+    # 1. Intento principal: formato real "Invitaciones: cod1 cod2 ..."
+    m = PATRON_BLOQUE_CODIGOS.search(texto)
+    if m:
+        bloque = m.group(1)
+        candidatos = bloque.split()
+        codigos = [c for c in candidatos if c.lower() not in PALABRAS_A_IGNORAR]
+        if codigos:
+            return codigos
+
+    # 2. Alternativas por si el formato cambia
+    for patron in PATRONES_CODIGO_ALT:
+        m = re.search(patron, texto, re.IGNORECASE)
+        if m:
+            candidato = m.group(1)
+            if candidato.lower() not in PALABRAS_A_IGNORAR:
+                return [candidato]
+
+    return []
+
+
 ARCHIVO_ESTADO = "ultimo_visto.json"
 # -------------------------------------------------------
 
@@ -58,12 +104,33 @@ def guardar_estado(estado):
         json.dump(estado, f, ensure_ascii=False, indent=2)
 
 
-def enviar_telegram(mensaje):
+def enviar_telegram(mensaje, botones=None):
+    """Envía un mensaje por Telegram. Si se pasa 'botones' (una lista de
+    filas, cada fila una lista de dicts de botón), se añade un teclado en
+    línea al mensaje."""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {"chat_id": CHAT_ID, "text": mensaje}
+    if botones:
+        data["reply_markup"] = json.dumps({"inline_keyboard": botones})
     r = requests.post(url, data=data, timeout=15)
     if not r.ok:
         print(f"[!] Error enviando notificación: {r.text}", file=sys.stderr)
+
+
+def construir_botones_codigos(codigos):
+    """Construye un teclado en línea: un botón 'Copiar' por cada código
+    detectado, y una última fila con el botón para abrir la web de canje."""
+    filas = []
+    for codigo in codigos:
+        filas.append([{
+            "text": f"📋 Copiar {codigo}",
+            "copy_text": {"text": codigo},
+        }])
+    filas.append([{
+        "text": "🔗 Ir a canjear",
+        "url": URL_CANJE,
+    }])
+    return filas
 
 
 def contiene_palabra_clave(texto):
@@ -100,10 +167,22 @@ def revisar_telegram(estado):
         texto = re.sub(r"\s+", " ", texto).strip()
 
         if contiene_palabra_clave(texto):
-            aviso = (f"🚗 [TELEGRAM] Posible invitación en ForoCoches:\n\n{texto}\n\n"
-                      f"https://t.me/{CANAL_TELEGRAM}/{msg_id}")
+            codigos = extraer_codigos(texto)
+            if codigos:
+                lista_codigos = "\n".join(f"• {c}" for c in codigos)
+                aviso = (f"🚗 [TELEGRAM] ¡Código(s) detectado(s)!\n\n"
+                          f"{lista_codigos}\n\n"
+                          f"Mensaje original: {texto}\n"
+                          f"https://t.me/{CANAL_TELEGRAM}/{msg_id}")
+                botones = construir_botones_codigos(codigos)
+                enviar_telegram(aviso, botones=botones)
+            else:
+                aviso = (f"🚗 [TELEGRAM] Posible invitación (código no detectado automáticamente, revisa el mensaje):\n\n"
+                          f"{texto}\n"
+                          f"https://t.me/{CANAL_TELEGRAM}/{msg_id}")
+                botones = [[{"text": "🔗 Ir a canjear", "url": URL_CANJE}]]
+                enviar_telegram(aviso, botones=botones)
             print(aviso)
-            enviar_telegram(aviso)
             nuevos += 1
         ids_vistos.add(msg_id)
 
@@ -183,12 +262,22 @@ def revisar_gmail(estado):
 
             texto_completo = f"{asunto} {cuerpo}"
             if contiene_palabra_clave(texto_completo):
-                # Recortamos el cuerpo para no mandar un mensaje gigante
+                codigos = extraer_codigos(texto_completo)
                 extracto = cuerpo[:500] + ("..." if len(cuerpo) > 500 else "")
-                aviso = (f"📧 [NEWSLETTER] Correo nuevo con posible invitación:\n\n"
-                          f"Asunto: {asunto}\n\n{extracto}")
+                if codigos:
+                    lista_codigos = "\n".join(f"• {c}" for c in codigos)
+                    aviso = (f"📧 [NEWSLETTER] ¡Código(s) detectado(s)!\n\n"
+                              f"{lista_codigos}\n\n"
+                              f"Asunto: {asunto}\n\n{extracto}")
+                    botones = construir_botones_codigos(codigos)
+                    enviar_telegram(aviso, botones=botones)
+                else:
+                    aviso = (f"📧 [NEWSLETTER] Correo nuevo con posible invitación "
+                              f"(código no detectado automáticamente, revisa el correo):\n\n"
+                              f"Asunto: {asunto}\n\n{extracto}")
+                    botones = [[{"text": "🔗 Ir a canjear", "url": URL_CANJE}]]
+                    enviar_telegram(aviso, botones=botones)
                 print(aviso)
-                enviar_telegram(aviso)
                 nuevos += 1
 
             ids_vistos.add(eid_str)
